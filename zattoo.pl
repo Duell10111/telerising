@@ -371,7 +371,7 @@ my %O = (
     'clients' => 10,
     'max-req' => 100,
 );
-my $port = 8080;
+my $port = 8081;
 
 # START DAEMON
 my $d = HTTP::Daemon->new(
