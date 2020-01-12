@@ -21,7 +21,7 @@
 # ###########################
 
 print "\n=================================\n";
-print   " TELERISING API v0.2.0 // ZATTOO \n";
+print   " TELERISING API v0.2.1 // ZATTOO \n";
 print   "=================================\n\n";
 
 use strict;
@@ -42,7 +42,7 @@ use HTTP::Cookies;
 use HTML::TreeBuilder;
 use URI::Escape;
 use Time::Piece;
-use Sys::HostIP;
+use Sys::HostAddr;
 use JSON;
 use POSIX qw/ WNOHANG /;
 use POSIX qw( strftime );
@@ -82,6 +82,9 @@ sub login_process {
 			my $provider     = $userfile->{'provider'};
 			my $login_mail   = $userfile->{'login'};
 			my $login_passwd = $userfile->{'password'};
+			my $interface    = $userfile->{'interface'};
+			my $zserver      = $userfile->{'server'};
+			my $ffmpeglib    = $userfile->{'ffmpeg_lib'};
 			
 			if( not defined $provider or not defined $login_mail or not defined $login_passwd ) {
 				print "ERROR: Unable to retrieve complete login data\n\n";
@@ -91,9 +94,38 @@ sub login_process {
 				exit;
 			}
 			
+			# SET DEFAULT VALUES
+			if( not defined $interface ) {
+				$interface = "";
+			} elsif( $interface =~ /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/ ) {
+				print "NOTICE: Custom interface (IP: $interface) will be used.\n\n";
+			} else {
+				print "NOTICE: Custom interface (IP: $interface) is not a valid IP address, default Host IP will be used instead.\n\n";
+				$interface = "";
+			}	
+			
+			if( not defined $zserver ) {
+				$zserver = "fr5-0";
+			} elsif( $zserver =~ /fr5-[0-5]|zh2-[0-9]|zba6-[0-2]|1und1-fra1902-[1-4]|matterlau1-[0-1]/ ) {
+				print "NOTICE: Custom Zattoo server \"$zserver\" will be used.\n\n";
+			} else {
+				print "NOTICE: Custom Zattoo server \"$zserver\" is not supported, default server will be used instead.\n\n";
+				$zserver = "fr5-0";
+			}
+			
+			if( not defined $ffmpeglib ) {
+				$ffmpeglib = "/usr/bin/ffmpeg";
+			} elsif( $ffmpeglib =~ /\/usr\/bin\/ffmpeg|\/bin\/ffmpeg|\/ramdisk\/ffmpeg/ ) {
+				print "NOTICE: Use custom ffmpeg library path \"$ffmpeglib\"\n\n";
+			} else {
+				print "NOTICE: ffmpeg library path \"$ffmpeglib\" is not supported, default library will be used instead.\n\n";
+				$ffmpeglib = "/usr/bin/ffmpeg";
+			}
+			
+			# CHECK PROVIDER
 			if( $provider eq "www.zattoo.com" ) {
 				$provider = "zattoo.com";
-			} elsif( $provider =~ /zattoo.com|www.1und1.tv|www.netplus.tv|mobiltv.quickline.com|tvplus.m-net.de|player.waly.tv|www.meinewelt.cc|www.bbv-tv.net|www.vtxtv.ch|www.myvisiontv.ch|iptv.glattvision.ch|www.saktv.ch|nettv.netcologne.de|tvonline.ewe.de|www.quantum-tv.com|tv.salt.ch|tvonline.swb-gruppe.de/) {
+			} elsif( $provider =~ /zattoo.com|www.1und1.tv|www.netplus.tv|mobiltv.quickline.com|tvplus.m-net.de|player.waly.tv|www.meinewelt.cc|www.bbv-tv.net|www.vtxtv.ch|www.myvisiontv.ch|iptv.glattvision.ch|www.saktv.ch|nettv.netcologne.de|tvonline.ewe.de|www.quantum-tv.com|tv.salt.ch|tvonline.swb-gruppe.de|tv.eir.ie/ ) {
 				print "";
 			} else {
 				print "ERROR: Provider is not supported. Please recheck the domain.\n\n";
@@ -232,7 +264,11 @@ sub login_process {
 					}
 				}
 			}
-
+			
+			if( not defined $country ) {
+				$country = "XX";
+			}
+			
 			if( $country eq "CH" ) {
 				print "--- COUNTRY: SWITZERLAND ---\n\n";
 			} elsif( $country eq "DE" ) {
@@ -301,7 +337,7 @@ sub login_process {
 			
 			# CREATE FILE
 			open my $session_file, ">", "session.json" or die "UNABLE TO CREATE SESSION FILE!\n\n";
-			print $session_file "{\"provider\":\"$provider\",\"session_token\":\"$session_token\",\"powerid\":\"$powerid\",\"tv_mode\":\"$tv_mode\",\"country\":\"$country\"}";
+			print $session_file "{\"provider\":\"$provider\",\"session_token\":\"$session_token\",\"powerid\":\"$powerid\",\"tv_mode\":\"$tv_mode\",\"country\":\"$country\",\"interface\":\"$interface\",\"server\":\"$zserver\",\"ffmpeg_lib\":\"$ffmpeglib\"}";
 			close $session_file;
 			
 			sleep 86400;
@@ -345,8 +381,8 @@ my $d = HTTP::Daemon->new(
 	ReusePort => $port,
 ) or die "API CANNOT BE STARTED!\n\n";
 
-my $hostipchecker = Sys::HostIP->new;
-my $hostip = $hostipchecker->ip;
+my $hostipchecker = Sys::HostAddr->new;
+my $hostip = $hostipchecker->first_ip;
 
 print "API STARTED!\n\n";
 print "Host IP address: $hostip:$port\n\n";
@@ -465,6 +501,8 @@ sub http_child {
 		my $country       = $session_data->{"country"};
 		my $tv_mode       = $session_data->{"tv_mode"};
 		my $powerid       = $session_data->{"powerid"};
+		my $server        = $session_data->{"server"};
+		my $ffmpeglib     = $session_data->{"ffmpeg_lib"};
 		
 		#
 		# RETRIEVE FILES
@@ -599,12 +637,16 @@ sub http_child {
 											my $logo = $channels->{'qualities'}[0]{'logo_black_84'};
 											$logo =~ s/84x48.png/210x120.png/g;
 											
-											$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+											if( $country =~ /DE|CH/ and defined $rytec_id->{$name} ) {
+												$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+											} else {
+												$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $name . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+											}
 											
 											if( defined $ffmpeg and defined $dolby ) {
-												$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+												$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 											} elsif( defined $ffmpeg ) {
-												$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+												$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 											} elsif( defined $dolby ) {
 												$ch_m3u = $ch_m3u .  "http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\n";
 											} else {
@@ -617,12 +659,16 @@ sub http_child {
 												my $logo = $channels->{'qualities'}[1]{'logo_black_84'};
 												$logo =~ s/84x48.png/210x120.png/g;
 												
-												$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+												if( $country eq /DE|CH/ and defined $rytec_id->{$name} ) {
+													$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+												} else {
+													$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $name . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+												}
 												
 												if( defined $ffmpeg and defined $dolby ) {
-												$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+												$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 												} elsif( defined $ffmpeg ) {
-													$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+													$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 												} elsif( defined $dolby ) {
 													$ch_m3u = $ch_m3u .  "http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\n";
 												} else {
@@ -650,12 +696,16 @@ sub http_child {
 									my $logo = $channels->{'qualities'}[0]{'logo_black_84'};
 									$logo =~ s/84x48.png/210x120.png/g;
 									
-									$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+									if( $country eq /DE|CH/ and defined $rytec_id->{$name} ) {
+										$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+									} else {
+										$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $name . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+									}
 									
 									if( defined $ffmpeg and defined $dolby ) {
-										$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+										$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 									} elsif( defined $ffmpeg ) {
-										$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+										$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 									} elsif( defined $dolby ) {
 										$ch_m3u = $ch_m3u .  "http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\n";
 									} else {
@@ -668,12 +718,16 @@ sub http_child {
 										my $logo = $channels->{'qualities'}[1]{'logo_black_84'};
 										$logo =~ s/84x48.png/210x120.png/g;
 										
-										$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+										if( $country eq /DE|CH/ and defined $rytec_id->{$name} ) {
+											$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $rytec_id->{$name} . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+										} else {
+											$ch_m3u = $ch_m3u . "#EXTINF:0001 tvg-id=\"" . $name . "\" group-title=\"" . $group . "\" tvg-logo=\"https://images.zattic.com" . $logo . "\", " . $name . "\n";
+										}
 										
 										if( defined $ffmpeg and defined $dolby ) {
-												$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+												$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 										} elsif( defined $ffmpeg ) {
-											$ch_m3u = $ch_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+											$ch_m3u = $ch_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 										} elsif( defined $dolby ) {
 											$ch_m3u = $ch_m3u .  "http://$hostip:$port/index.m3u8?channel=" . $chid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\n";
 										} else {
@@ -825,9 +879,9 @@ sub http_child {
 								$rec_m3u = $rec_m3u . "#EXTINF:0001 tvg-id=\"\" group-title=\"Recordings\" tvg-logo=\"" . $image . "\", " . $record_local . " | " . $name . " | " . $cname . "\n";
 								
 								if( defined $ffmpeg and defined $dolby ) {
-									$rec_m3u = $rec_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?recording=" . $rid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+									$rec_m3u = $rec_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?recording=" . $rid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 								} elsif( defined $ffmpeg ) {
-									$rec_m3u = $rec_m3u .  "pipe:///usr/bin/ffmpeg -i \"http://$hostip:$port/index.m3u8?recording=" . $rid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
+									$rec_m3u = $rec_m3u .  "pipe://$ffmpeglib -i \"http://$hostip:$port/index.m3u8?recording=" . $rid ."\&bw=" . $quality . "\&platform=" . $platform . "\" -vcodec copy -acodec copy -f mpegts pipe:1\n";
 								} elsif( defined $dolby ) {
 									$rec_m3u = $rec_m3u .  "http://$hostip:$port/index.m3u8?recording=" . $rid ."\&bw=" . $quality . "\&platform=" . $platform . "\&dolby=true" . "\n";
 								} else {
@@ -883,7 +937,7 @@ sub http_child {
 						my $seq   = $stamp/4;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
 
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -902,7 +956,7 @@ sub http_child {
 						my $seq   = $stamp/4;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -921,7 +975,7 @@ sub http_child {
 						my $seq   = $stamp/4;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -940,7 +994,7 @@ sub http_child {
 						my $seq   = $stamp/4;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:1\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp2.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/$quality/$stamp3.ts?z32=$zkeyval";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -995,7 +1049,7 @@ sub http_child {
 												
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
+						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
 
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -1030,7 +1084,7 @@ sub http_child {
 							$audiocodec = ".eac";
 						}
 						
-						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
+						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -1064,7 +1118,7 @@ sub http_child {
 							$audiocodec = ".eac";
 						}
 						
-						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
+						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -1098,7 +1152,7 @@ sub http_child {
 							$audiocodec = ".eac";
 						}
 												
-						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
+						my $audiom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp2" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_audio_ts_$stamp3" . "_" . $audiobw . "000_d_4000_" . $audionum . $audiocodec . "?z32=$zkeyval\n";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -1126,7 +1180,7 @@ sub http_child {
 						my $seq   = $utc/4/1000;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
 
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -1146,7 +1200,7 @@ sub http_child {
 						my $seq   = $utc/4/1000;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -1166,7 +1220,7 @@ sub http_child {
 						my $seq   = $utc/4/1000;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
@@ -1186,7 +1240,7 @@ sub http_child {
 						my $seq   = $utc/4/1000;
 						my $date  = localtime($stamp)->strftime('%FT%T.0+00:00');
 						
-						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://fr5-0-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
+						my $videom3u8 = "#EXTM3U\n#EXT-X-VERSION:5\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:$seq\n#EXT-X-PROGRAM-DATE-TIME:$date\n\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp2" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval\n#EXTINF:4,\nhttps://$server-$platform-pvr.zahs.tv/$zch/$zstart/$zend/f_track_video_ts_$stamp3" . "_bw_" . $quality . "000_d_4000_num_0.ts?z32=$zkeyval";
 						
 						my $response = HTTP::Response->new( 200, 'OK');
 						$response->header('Content-Type' => 'text'),
